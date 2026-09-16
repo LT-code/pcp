@@ -53,6 +53,19 @@ const char *perf_strerror(int err)
     return ret;
 }
 
+/* When set, every dynamic event discovered in sysfs is opened during setup,
+ * not just those listed in the [dynamic] section of the configuration file.
+ * Such events are opened in the disabled state so that they can later be
+ * enabled with pmStore(3) without needing the privileges that the PMDA has
+ * dropped by then.
+ */
+static int perf_preopen_all;
+
+void perf_set_preopen(int preopen)
+{
+    perf_preopen_all = preopen;
+}
+
 static void free_eventcpuinfo(eventcpuinfo_t *del)
 {
     if(NULL == del)
@@ -863,6 +876,11 @@ static int perf_setup_dynamic_events(perfdata_t *inst,
                     ret = -E_PERFEVENT_RUNTIME;
                     continue;
                 }
+            } else if (perf_preopen_all) {
+                /* opened but left with user_enabled clear: the counter is
+                 * ready for pmStore, but is not counting yet
+                 */
+                (void)event_stash_open(curr, 1);
             }
 
             ++nevents;
@@ -1174,7 +1192,8 @@ int perf_counter_open_late(perfhandle_t *inst, int idx)
     {
         /* Opening a system wide counter needs either a permissive
          * kernel.perf_event_paranoid setting or CAP_PERFMON, and by now the
-         * PMDA is running as an unprivileged user.
+         * PMDA is running as an unprivileged user.  Start the PMDA with -E to
+         * open these counters up front instead.
          */
         pmNotifyErr(LOG_INFO, "unable to open counter \"%s\" on demand: %s\n",
                     event->name, strerror(errno));

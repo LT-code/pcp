@@ -147,10 +147,17 @@ int perf_counter_set_user_enabled(perfhandle_t *inst, int idx, int enabled);
 int perf_counter_get_user_enabled(perfhandle_t *inst, int idx);
 
 /* Open a counter that was discovered but not configured at startup.  This
- * needs privileges the PMDA has usually dropped by now, so it is best effort.
+ * needs privileges the PMDA has usually dropped by now, so it is best effort;
+ * see the -E option to open such counters while still running as root.
  * Already opened counters, including RAPL counters, are left alone.
  */
 int perf_counter_open_late(perfhandle_t *inst, int idx);
+
+/* Open every discovered dynamic event during setup, not just those listed in
+ * the [dynamic] section of the configuration file.  Must be called before
+ * perf_event_create().
+ */
+void perf_set_preopen(int preopen);
 
 int perf_get(perfhandle_t *inst, perf_counter **data, int *size, perf_derived_counter **derived_counter, int *derived_size);
 

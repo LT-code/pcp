@@ -196,7 +196,8 @@ static const char *dynamic_helptab[] =
     "disable it.  The counter only collects when this is one, perfevent.control.enabled\n"
     "is one and no perfalloc(1) lock is held.  Counters that were discovered but not\n"
     "listed in the [dynamic] section of perfevent.conf have no file descriptors open;\n"
-    "enabling one of those needs permission to open a counter at runtime."
+    "enabling one of those needs pmdaperfevent to have been started with -E, or a\n"
+    "kernel.perf_event_paranoid setting that permits opening a counter at runtime."
 };
 
 static const char *dynamic_derived_helptab[] =
@@ -928,12 +929,16 @@ int main(int argc, char **argv)
     pmdaDaemon(&dispatch, PMDA_INTERFACE_7, pmGetProgname(), PERFEVENT,
                "perfevent.log", mypath);
 
-    while ((c = pmdaGetOpt(argc, argv, "CD:d:i:l:pu:U:6:?", &dispatch, &err)) != EOF)
+    while ((c = pmdaGetOpt(argc, argv, "CD:d:Ei:l:pu:U:6:?", &dispatch, &err)) != EOF)
     {
         switch(c)
         {
         case 'C':
             compat_names = 1;
+            break;
+        case 'E':
+            /* must be set before perfevent_init() opens any events */
+            perf_set_preopen(1);
             break;
         case 'U':
             username = optarg;

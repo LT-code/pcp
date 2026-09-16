@@ -47,6 +47,10 @@ int perf_counter_open_late(perfhandle_t *inst, int idx)
     return 1;
 }
 
+void perf_set_preopen(int preopen)
+{
+}
+
 int perf_get(perfhandle_t *inst, perf_counter **data, int *size,
              perf_derived_counter **derived_counter, int *derived_size)
 {
