@@ -32,7 +32,7 @@ typedef struct perf_data_t_
 typedef struct perf_counter_t_
 {
     char *name;
-    int counter_disabled;
+    int counter_disabled; /* unopened or disabled by the user */
     perf_data *data;
     int ninstances;
 } perf_counter;
@@ -52,6 +52,7 @@ typedef struct perf_counter_list_t_
 typedef struct perf_derived_counter_t_
 {
     char *name;
+    int counter_disabled; /* at least one source counter is unavailable */
     perf_derived_data *data;
     int ninstances;
     perf_counter_list *counter_list;
@@ -71,9 +72,11 @@ typedef struct eventcpuinfo_t_ {
 
 typedef struct event_t_ {
     char *name;
-    int disable_event;
+    int disable_event;		/* no usable file descriptors for this event */
     eventcpuinfo_t *info;
-    int ncpus;
+    int ncpus;			/* number of cpus successfully opened */
+
+    int user_enabled;		/* per-counter state requested via pmStore */
 } event_t;
 
 typedef struct event_list_t_ {
@@ -121,6 +124,17 @@ void perf_event_destroy(perfhandle_t *inst);
 #define PERF_COUNTER_ENABLE 0
 #define PERF_COUNTER_DISABLE 1
 int perf_counter_enable(perfhandle_t *inst, int enable);
+
+/* Apply the enable/disable ioctl to a single counter, identified by its
+ * index in the array returned by perf_get().
+ */
+int perf_counter_enable_one(perfhandle_t *inst, int idx, int enable);
+
+/* Per-counter state requested via pmStore.  perf_counter_enable() only
+ * enables counters whose user_enabled flag is set.
+ */
+int perf_counter_set_user_enabled(perfhandle_t *inst, int idx, int enabled);
+int perf_counter_get_user_enabled(perfhandle_t *inst, int idx);
 
 int perf_get(perfhandle_t *inst, perf_counter **data, int *size, perf_derived_counter **derived_counter, int *derived_size);
 

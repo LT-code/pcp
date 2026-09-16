@@ -1221,6 +1221,55 @@ void test_parse_hv_gpci_events(void)
     assert(ev_count == (8 + 9));
 }
 
+void test_derived_disabled_source(void)
+{
+    perfhandle_t *h;
+    perf_counter *data = NULL;
+    perf_derived_counter *derived = NULL;
+    perf_counter *source, *other;
+    int size = 0, derivedsize = 0, idx, ninstances;
+
+    printf(" ===== %s ====\n", __FUNCTION__);
+    wrap_sysconf_override = 1;
+    wrap_sysconf_retcode = 1;
+    h = perf_event_create("config/test_derived_counters.txt");
+    assert(h != NULL);
+    assert(perf_get(h, &data, &size, &derived, &derivedsize) > 0);
+    assert(derivedsize == 2);
+
+    source = derived[0].counter_list->counter;
+    other = derived[0].counter_list->next->counter;
+    idx = source - data;
+    ninstances = source->ninstances;
+    /* The mock reads zero deltas, so seed accumulated counts to exercise
+     * combining an advancing input with a disabled input's cached value.
+     */
+    source->data[0].value = 10;
+    other->data[0].value = 20;
+    assert(perf_get(h, &data, &size, &derived, &derivedsize) > 0);
+    assert(!derived[0].counter_disabled);
+    assert(derived[0].data[0].value == 30);
+
+    assert(perf_counter_set_user_enabled(h, idx, 0) == 0);
+    other->data[0].value = 25;
+    assert(perf_get(h, &data, &size, &derived, &derivedsize) > 0);
+    assert(source->counter_disabled);
+    assert(derived[0].counter_disabled);
+    assert(derived[0].data[0].value == 30);
+    assert(!derived[1].counter_disabled);
+    assert(source->ninstances == ninstances);
+
+    assert(perf_counter_set_user_enabled(h, idx, 1) == 0);
+    assert(perf_get(h, &data, &size, &derived, &derivedsize) > 0);
+    assert(!source->counter_disabled);
+    assert(!derived[0].counter_disabled);
+    assert(derived[0].data[0].value == 35);
+
+    perf_event_destroy(h);
+    perf_counter_destroy(data, size, derived, derivedsize);
+    wrap_sysconf_override = 0;
+}
+
 int runtest(int n)
 {
     init_mock();
@@ -1339,6 +1388,9 @@ int runtest(int n)
 	case 36:
 	    test_parse_hv_gpci_events();
 	    break;
+        case 37:
+            test_derived_disabled_source();
+            break;
         default:
             ret = -1;
     }

@@ -3,6 +3,7 @@ QA output created by 2110
 === control metrics are present ===
 perfevent.control.enabled
 perfevent.control.lock_held
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled
 
 === control metric descriptors ===
 perfevent.control.enabled
@@ -11,10 +12,14 @@ perfevent.control.enabled
 perfevent.control.lock_held
     Data Type: 32-bit unsigned int  InDom: PM_INDOM_NULL 0xffffffff
     Semantics: instant  Units: none
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled
+    Data Type: 32-bit unsigned int  InDom: PM_INDOM_NULL 0xffffffff
+    Semantics: discrete  Units: none
 
 === default state ===
 perfevent.control.enabled = 1
 perfevent.control.lock_held = 0
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled = 1
 counters collecting
 perfevent.derived.clocks.value has values
 
@@ -25,6 +30,37 @@ counters stopped
 perfevent.control.enabled new value=1
 perfevent.control.enabled = 1
 counters collecting
+
+=== per-counter switch: off affects only that counter ===
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled new value=0
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled = 0
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.value no values
+perfevent.hwcounters.perf__PERF_COUNT_SW_TASK_CLOCK.value has values
+perfevent.derived.clocks.value no values
+
+=== a per-counter switch survives a global off/on cycle ===
+perfevent.control.enabled new value=0
+perfevent.control.enabled new value=1
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled = 0
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.value no values
+perfevent.hwcounters.perf__PERF_COUNT_SW_TASK_CLOCK.value has values
+perfevent.derived.clocks.value no values
+
+=== per-counter switch: back on ===
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled new value=1
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled = 1
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.value has values
+perfevent.derived.clocks.value has values
+
+=== disabling a source while collection is globally paused ===
+perfevent.control.enabled new value=0
+perfevent.derived.clocks.value has values
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled new value=0
+perfevent.derived.clocks.value no values
+perfevent.control.enabled new value=1
+perfevent.derived.clocks.value no values
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled new value=1
+perfevent.derived.clocks.value has values
 
 === an external perfalloc(1) lock overrides pmstore ===
 perfevent.control.lock_held = 1
@@ -41,8 +77,10 @@ counters collecting
 
 === values outside 0..1 are rejected ===
 perfevent.control.enabled: new value="2" pmStore: Bad input to pmstore
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled: new value="42" pmStore: Bad input to pmstore
 state is unchanged:
 perfevent.control.enabled = 1
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.enabled = 1
 
 === a value of the wrong type is rejected ===
 The value "not-a-number" is incompatible with the data type (PM_TYPE_U32)

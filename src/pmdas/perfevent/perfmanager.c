@@ -238,6 +238,44 @@ int perf_counter_desired(perfmanagerhandle_t *inst)
     return res;
 }
 
+int perf_counter_request_enable_one(perfmanagerhandle_t *inst, int idx, int enable)
+{
+    monitor_t *m = ((manager_t *)inst)->monitor;
+    int sts = 0;
+
+    pthread_mutex_lock( &m->counter_mutex );
+
+    sts = perf_counter_set_user_enabled(m->perf, idx, enable == PERF_COUNTER_ENABLE);
+
+    if( sts == 0 )
+    {
+        if( m->counter_state == PERF_COUNTER_ENABLE )
+        {
+            perf_counter_enable_one(m->perf, idx, enable);
+        }
+        if( enable == PERF_COUNTER_DISABLE )
+        {
+            m->has_been_disabled = 1;
+        }
+    }
+
+    pthread_mutex_unlock( &m->counter_mutex );
+
+    return sts;
+}
+
+int perf_counter_desired_one(perfmanagerhandle_t *inst, int idx)
+{
+    monitor_t *m = ((manager_t *)inst)->monitor;
+    int res;
+
+    pthread_mutex_lock( &m->counter_mutex );
+    res = perf_counter_get_user_enabled(m->perf, idx);
+    pthread_mutex_unlock( &m->counter_mutex );
+
+    return res;
+}
+
 static void *runner(void *data)
 {
     struct timespec ts;

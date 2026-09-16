@@ -2,7 +2,8 @@
 # PCP QA Test No. 2110
 # Exercise the perfevent PMDA pmstore controls:
 # - the global perfevent.control.enabled switch
-# - an external perfalloc(1) lock overriding the global switch
+# - the per-counter perfevent.hwcounters.<counter>.enabled switches
+# - an external perfalloc(1) lock overriding both
 #
 # Copyright (c) 2026 Thomas Lopez.  All Rights Reserved.
 #
@@ -145,16 +146,18 @@ perfevent_install
 echo
 echo "=== control metrics are present ==="
 pminfo perfevent.control
+pminfo $COUNTER.enabled
 
 echo
 echo "=== control metric descriptors ==="
-pminfo -d perfevent.control.enabled perfevent.control.lock_held 2>&1 \
+pminfo -d perfevent.control.enabled perfevent.control.lock_held $COUNTER.enabled 2>&1 \
 | sed -e '/^$/d'
 
 echo
 echo "=== default state ==="
 _control perfevent.control.enabled
 _control perfevent.control.lock_held
+_control $COUNTER.enabled
 _collecting
 _values $DERIVED
 
@@ -168,6 +171,46 @@ pmstore perfevent.control.enabled 1 | _filter_store
 _settle
 _control perfevent.control.enabled
 _collecting
+
+echo
+echo "=== per-counter switch: off affects only that counter ==="
+pmstore $COUNTER.enabled 0 | _filter_store
+_settle
+_control $COUNTER.enabled
+_values $COUNTER.value
+_values $OTHER.value
+_values $DERIVED
+
+echo
+echo "=== a per-counter switch survives a global off/on cycle ==="
+pmstore perfevent.control.enabled 0 | _filter_store
+pmstore perfevent.control.enabled 1 | _filter_store
+_settle
+_control $COUNTER.enabled
+_values $COUNTER.value
+_values $OTHER.value
+_values $DERIVED
+
+echo
+echo "=== per-counter switch: back on ==="
+pmstore $COUNTER.enabled 1 | _filter_store
+_settle
+_control $COUNTER.enabled
+_values $COUNTER.value
+_values $DERIVED
+
+echo
+echo "=== disabling a source while collection is globally paused ==="
+pmstore perfevent.control.enabled 0 | _filter_store
+_values $DERIVED
+pmstore $COUNTER.enabled 0 | _filter_store
+_values $DERIVED
+pmstore perfevent.control.enabled 1 | _filter_store
+_settle
+_values $DERIVED
+pmstore $COUNTER.enabled 1 | _filter_store
+_settle
+_values $DERIVED
 
 echo
 echo "=== an external perfalloc(1) lock overrides pmstore ==="
@@ -202,8 +245,10 @@ fi
 echo
 echo "=== values outside 0..1 are rejected ==="
 pmstore perfevent.control.enabled 2 2>&1 | _filter_store
+pmstore $COUNTER.enabled 42 2>&1 | _filter_store
 echo "state is unchanged:"
 _control perfevent.control.enabled
+_control $COUNTER.enabled
 
 echo
 echo "=== a value of the wrong type is rejected ==="

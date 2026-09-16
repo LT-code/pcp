@@ -44,4 +44,10 @@ int perf_lock_held(perfmanagerhandle_t *inst);
 int perf_counter_request_enable(perfmanagerhandle_t *inst, int enable);
 int perf_counter_desired(perfmanagerhandle_t *inst);
 
+/* Per-counter on/off switch for counters opened during startup, indexed
+ * as in the array returned by perf_get_r().
+ */
+int perf_counter_request_enable_one(perfmanagerhandle_t *inst, int idx, int enable);
+int perf_counter_desired_one(perfmanagerhandle_t *inst, int idx);
+
 #endif // PERFMANAGER_H_

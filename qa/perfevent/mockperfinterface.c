@@ -23,6 +23,24 @@ int perf_counter_enable(perfhandle_t *inst, int enable)
     return 0;
 }
 
+int perf_counter_enable_one(perfhandle_t *inst, int idx, int enable)
+{
+    fprintf(stderr,"perf_counter_enable_one(%d) -> %s\n", idx,
+            (enable == PERF_COUNTER_ENABLE) ? "ENABLED" : "DISABLED" );
+    return 0;
+}
+
+int perf_counter_set_user_enabled(perfhandle_t *inst, int idx, int enabled)
+{
+    fprintf(stderr,"perf_counter_set_user_enabled(%d, %d)\n", idx, enabled);
+    return 0;
+}
+
+int perf_counter_get_user_enabled(perfhandle_t *inst, int idx)
+{
+    return 1;
+}
+
 int perf_get(perfhandle_t *inst, perf_counter **data, int *size,
              perf_derived_counter **derived_counter, int *derived_size)
 {

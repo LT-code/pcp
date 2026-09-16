@@ -47,6 +47,9 @@
  *	        one for each CPU. Uncore/Northbridge counters only have one
  *	        instance.
  *
+ *	perfevent.hwcounters.{HWCOUNTER}.enabled
+ *	        per-counter on/off switch, set with pmStore(3)
+ *
  *	perfevent.hwcounters.{HWCOUNTER}.dutycycle
  *	        the ratio of time that the counter configured to the time it was
  *	        active. This value will typically be 1.00, but could be less if
@@ -100,6 +103,7 @@ typedef struct dynamic_metric_info
     perf_counter *hwcounter;
     perf_derived_counter *derived_counter;
     int		pmid_index;
+    int		counter_index;
     const char *help_text;
 } dynamic_metric_info_t;
 static dynamic_metric_info_t *dynamic_metric_infotab;
@@ -140,6 +144,13 @@ static pmdaMetric default_metric_settings[] =
             PM_SEM_INSTANT, PMDA_PMUNITS(0,0,0,0,0,0)
         },
     },
+    /* perfevent.hwcounters.{HWCOUNTER}.enabled
+     * NB: PM_INDOM_NULL here is load bearing, see setup_metrics()
+     */
+    {   NULL, /* m_user */ { 0 /* pmid */, PM_TYPE_U32, PM_INDOM_NULL,
+            PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0)
+        },
+    },
 };
 
 static pmdaMetric static_derived_metrictab[] =
@@ -148,7 +159,7 @@ static pmdaMetric static_derived_metrictab[] =
     { NULL, { PMDA_PMID(1,0), PM_TYPE_32, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) } }
 };
 
-#define NUM_STATIC_DERIVED_METRICS (sizeof(static_derived_metrictab)/sizeof(static_derived_metrictab))
+#define NUM_STATIC_DERIVED_METRICS (sizeof(static_derived_metrictab)/sizeof(static_derived_metrictab[0]))
 #define NUM_STATIC_DERIVED_INDOMS 0
 #define NUM_STATIC_DERIVED_CLUSTERS 1
 
@@ -169,7 +180,9 @@ static const char *dynamic_nametab[] =
     /* perfevent.hwcounters.{HWCOUNTER,DERIVED}.value */
     "value",
     /* perfevent.hwcounters.{HWCOUNTER}.dutycycle */
-    "dutycycle"
+    "dutycycle",
+    /* perfevent.hwcounters.{HWCOUNTER}.enabled */
+    "enabled"
 };
 
 static const char *dynamic_helptab[] =
@@ -177,7 +190,12 @@ static const char *dynamic_helptab[] =
     /* perfevent.hwcounters.{HWCOUNTER}.value */
     "The values of the counter",
     /* perfevent.hwcounters.{HWCOUNTER}.dutycycle */
-    "The ratio of the time that the hardware counter was enabled to the total run time"
+    "The ratio of the time that the hardware counter was enabled to the total run time",
+    /* perfevent.hwcounters.{HWCOUNTER}.enabled */
+    "Whether this counter is collecting.  Store one to enable the counter, zero to\n"
+    "disable it.  The counter only collects when this is one, perfevent.control.enabled\n"
+    "is one and no perfalloc(1) lock is held.  Only counters opened at startup can\n"
+    "be enabled."
 };
 
 static const char *dynamic_derived_helptab[] =
@@ -272,12 +290,37 @@ static int perfevent_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomV
     const perf_data *pdata = NULL;
     const perf_derived_data *pddata = NULL;
 
-    if (cluster >= NUM_STATIC_DERIVED_CLUSTERS + NUM_STATIC_CLUSTERS + nhwcounters)
+    if (cluster >= NUM_STATIC_DERIVED_CLUSTERS + NUM_STATIC_CLUSTERS + nhwcounters) {
+        perf_counter_list *clist;
+
+        if (pinfo->derived_counter->counter_disabled)
+            return PM_ERR_VALUE;
+        /* While collection is globally paused, perf_get_r() keeps the last
+         * sample.  Check current per-counter requests as well, since a source
+         * may have been disabled since that sample was taken.
+         */
+        for (clist = pinfo->derived_counter->counter_list; clist; clist = clist->next) {
+            int idx = clist->counter - hwcounters;
+
+            if (!perf_counter_desired_one(perfif, idx))
+                return PM_ERR_VALUE;
+        }
         pddata = &(pinfo->derived_counter->data[inst]);
-    else if (pinfo->hwcounter->counter_disabled)
-	return PM_ERR_VALUE;
-    else
-        pdata = &(pinfo->hwcounter->data[inst]);
+    } else {
+	/* the control metric is readable even for a counter that has no file
+	 * descriptors open
+	 */
+	if (pinfo->pmid_index == 2) {
+	    atom->ul = perf_counter_desired_one(perfif, pinfo->counter_index);
+	    return 1;
+	}
+	if (pinfo->hwcounter->counter_disabled)
+	    return PM_ERR_VALUE;
+	/* a counter switched off with pmStore has instances but no values */
+	if (!perf_counter_desired_one(perfif, pinfo->counter_index))
+	    return PM_ERR_VALUE;
+	pdata = &(pinfo->hwcounter->data[inst]);
+    }
 
     switch(pinfo->pmid_index)
     {
@@ -338,13 +381,14 @@ static int perfevent_store(pmdaResult *result, pmdaExt *pmda)
 	unsigned int	item = pmID_item(vsp->pmid);
 	pmAtomValue	av;
 	pmDesc		desc;
-	int		enable;
+	int		idx, enable;
 
 	if ((sts = pmdaDesc(vsp->pmid, &desc, pmda)) < 0)
 	    return sts;
 
-	/* Only the global enabled metric is writable. */
-	if (cluster != 0 || item != 2)
+	/* Only the global and per-counter enabled metrics are writable. */
+	idx = (int)cluster - (NUM_STATIC_CLUSTERS + NUM_STATIC_DERIVED_CLUSTERS);
+	if (item != 2 || (cluster != 0 && (idx < 0 || idx >= nhwcounters)))
 	    return PM_ERR_PERMISSION;
 
 	if (vsp->numval != 1 || vsp->vlist[0].inst != PM_IN_NULL)
@@ -356,7 +400,10 @@ static int perfevent_store(pmdaResult *result, pmdaExt *pmda)
 	    return PM_ERR_BADSTORE;
 
 	enable = av.ul ? PERF_COUNTER_ENABLE : PERF_COUNTER_DISABLE;
-	sts = perf_counter_request_enable(perfif, enable);
+	if (cluster == 0)
+	    sts = perf_counter_request_enable(perfif, enable);
+	else
+	    sts = perf_counter_request_enable_one(perfif, idx, enable);
 	if (sts < 0)
 	    return PM_ERR_PERMISSION;
     }
@@ -619,11 +666,14 @@ static int setup_metrics()
             /* Setup metric information (used within this PMDA) */
             pinfo->hwcounter = &hwcounters[i];
             pinfo->pmid_index = index;
+            pinfo->counter_index = i;
             pinfo->help_text = dynamic_helptab[index];
 
             /* Initialize pmdaMetric settings (required by API) */
             pmetric->m_desc.pmid = PMDA_PMID( cluster, index);
-            pmetric->m_desc.indom = indom;
+            /* control metrics are singular, leave them PM_INDOM_NULL */
+            if (pmetric->m_desc.indom != PM_INDOM_NULL)
+                pmetric->m_desc.indom = indom;
             pmetric->m_user = pinfo;
 
             ++pinfo;
@@ -644,6 +694,7 @@ static int setup_metrics()
             /* Setup metrics info (used within this PMDA) */
             pinfo->derived_counter = &derived_counters[i];
             pinfo->pmid_index = index;
+            pinfo->counter_index = i;
             pinfo->help_text = dynamic_derived_helptab[index];
 
             /* Initialize pmdaMetric settings (required by API) */

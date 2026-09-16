@@ -575,7 +575,12 @@ static int perf_setup_event(perfdata_t *inst, const char *eventname,
     }
 
     event_t *curr = events + nevents;
+
+    /* the memory came from realloc(), so nothing in it is valid yet */
+    memset(curr, 0, sizeof *curr);
     curr->name = strdup(eventname);
+    curr->disable_event = 1;
+    curr->user_enabled = 1;
     curr->info = malloc( (sizeof *(curr->info)) * ncpus );
     curr->ncpus = 0;
 
@@ -751,6 +756,8 @@ static int perf_setup_dynamic_events(perfdata_t *inst,
 		}
 	    }
             event_t *curr = events + nevents;
+            memset(curr, 0, sizeof *curr);
+            curr->user_enabled = !disable_event;
             curr->name = strdup(eventname);
 
             curr->disable_event = disable_event;
@@ -987,41 +994,114 @@ void perf_event_destroy(perfhandle_t *inst)
     rapl_destroy();
 }
 
+/* \brief apply the enable/disable ioctl to every open file descriptor of one
+ * event.
+ *
+ * \returns the number of file descriptors successfully switched.
+ */
+static int event_ioctl(event_t *event, int enable)
+{
+    int cpuidx, ret;
+    int n = 0;
+    int request;
+
+    if(event->disable_event)
+    {
+        /* nothing to switch: no file descriptors */
+        return 0;
+    }
+
+    request = (enable == PERF_COUNTER_ENABLE) ? PERF_EVENT_IOC_ENABLE : PERF_EVENT_IOC_DISABLE;
+
+    for(cpuidx = 0; cpuidx < event->ncpus; ++cpuidx)
+    {
+        eventcpuinfo_t *info = &event->info[cpuidx];
+
+        if( info->type == EVENT_TYPE_PERF && info->fd >= 0 )
+        {
+            ret = ioctl(info->fd, request, 0);
+            if( ret == -1 )
+            {
+                fprintf(stderr, "ioctl failed for cpu%d for \"%s\": %s\n", info->cpu, event->name, strerror(errno) );
+            }
+            else
+            {
+                ++n;
+            }
+        }
+    }
+
+    return n;
+}
+
 int perf_counter_enable(perfhandle_t *inst, int enable)
 {
-    int idx, cpuidx, ret;
+    int idx;
     int n = 0;
     perfdata_t *pdata = (perfdata_t *)inst;
 
     for(idx = 0; idx < pdata->nevents; ++idx)
     {
         event_t *event = &pdata->events[idx];
+	int want;
+
 	if (event->disable_event) {
 	    ++n;
 	    continue;
 	}
 
-        for(cpuidx = 0; cpuidx < event->ncpus; ++cpuidx)
-        {
-            eventcpuinfo_t *info = &event->info[cpuidx];
+	/* a counter switched off with pmStore stays off when the global
+	 * switch is turned back on
+	 */
+	want = (enable == PERF_COUNTER_ENABLE && event->user_enabled)
+	     ? PERF_COUNTER_ENABLE : PERF_COUNTER_DISABLE;
 
-            if( info->type == EVENT_TYPE_PERF && info->fd >= 0 ) 
-            {
-                int request = (enable == PERF_COUNTER_ENABLE) ? PERF_EVENT_IOC_ENABLE : PERF_EVENT_IOC_DISABLE;
-                ret = ioctl(info->fd, request, 0);
-                if( ret == -1 )
-                {
-                    fprintf(stderr, "ioctl failed for cpu%d for \"%s\": %s\n", info->cpu, event->name, strerror(errno) );
-                }
-                else
-                {
-                    ++n;
-                }
-            }
-        }
+	n += event_ioctl(event, want);
     }
 
     return n;
+}
+
+int perf_counter_enable_one(perfhandle_t *inst, int idx, int enable)
+{
+    perfdata_t *pdata = (perfdata_t *)inst;
+
+    if(idx < 0 || idx >= pdata->nevents)
+    {
+        return -E_PERFEVENT_LOGIC;
+    }
+
+    return event_ioctl(&pdata->events[idx], enable);
+}
+
+int perf_counter_set_user_enabled(perfhandle_t *inst, int idx, int enabled)
+{
+    perfdata_t *pdata = (perfdata_t *)inst;
+
+    if(idx < 0 || idx >= pdata->nevents)
+    {
+        return -E_PERFEVENT_LOGIC;
+    }
+
+    if(enabled && pdata->events[idx].disable_event)
+    {
+        return -E_PERFEVENT_RUNTIME;
+    }
+
+    pdata->events[idx].user_enabled = (enabled != 0);
+    return 0;
+}
+
+int perf_counter_get_user_enabled(perfhandle_t *inst, int idx)
+{
+    perfdata_t *pdata = (perfdata_t *)inst;
+
+    if(idx < 0 || idx >= pdata->nevents)
+    {
+        return 0;
+    }
+
+    return pdata->events[idx].user_enabled;
 }
 
 static perf_counter *get_counter(perf_counter **counters, int size, const char *str)
@@ -1104,6 +1184,22 @@ static int perf_derived_get(perf_derived_counter **derived_counters,
             perf_counter_list *clist;
             perf_counter *ctr;
 
+            /* Do not combine live inputs with a disabled source's last
+             * reading.  Preserve the last complete sample until all of the
+             * sources can be read again.
+             */
+            pdcounter[idx].counter_disabled = 0;
+            for (clist = pdcounter[idx].counter_list; clist; clist = clist->next) {
+                ctr = clist->counter;
+                if (ctr->counter_disabled || ctr->data == NULL ||
+                    ctr->ninstances != pdcounter[idx].ninstances) {
+                    pdcounter[idx].counter_disabled = 1;
+                    break;
+                }
+            }
+            if (pdcounter[idx].counter_disabled)
+                continue;
+
             for (cpuidx = 0; cpuidx < pdcounter[idx].ninstances; cpuidx++) {
                 pdcounter[idx].data[cpuidx].value = 0;
                 clist = pdcounter[idx].counter_list;
@@ -1152,7 +1248,7 @@ int perf_get(perfhandle_t *inst, perf_counter **counters, int *size,
         event_t *event = &pdata->events[idx];
 
         pcounter[idx].name = event->name;
-	pcounter[idx].counter_disabled = event->disable_event;
+	pcounter[idx].counter_disabled = event->disable_event || !event->user_enabled;
 	if (event->disable_event) {
 	    continue;
 	}
@@ -1160,9 +1256,29 @@ int perf_get(perfhandle_t *inst, perf_counter **counters, int *size,
         if(0 == pcounter[idx].data)
         {
             pcounter[idx].data = malloc(event->ncpus * sizeof *pcounter[idx].data );
+            if(0 == pcounter[idx].data)
+            {
+                continue;
+            }
             memset(pcounter[idx].data, 0, event->ncpus * sizeof *pcounter[idx].data);
             pcounter[idx].ninstances = event->ncpus;
+
+            /* Seed the instance identifiers from the cpu placement.  The
+             * instance domain is named from these, and a counter which is
+             * open but not counting is never read below.
+             */
+            for(cpuidx = 0; cpuidx < event->ncpus; ++cpuidx)
+            {
+                pcounter[idx].data[cpuidx].id = event->info[cpuidx].cpu;
+            }
         }
+
+	/* a counter switched off with pmStore keeps its instances, but is
+	 * not read
+	 */
+	if (!event->user_enabled) {
+	    continue;
+	}
 
         for(cpuidx = 0; cpuidx < event->ncpus; ++cpuidx)
         {
