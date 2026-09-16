@@ -205,5 +205,6 @@ PMU name: software
  event name: page-faults
  event name: task-clock
 17 events found
+===== test_unconfigured_dynamic_events ====
 ===== test_derived_disabled_source ====
 Unit tests Passed

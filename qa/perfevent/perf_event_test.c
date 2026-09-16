@@ -1221,6 +1221,56 @@ void test_parse_hv_gpci_events(void)
     assert(ev_count == (8 + 9));
 }
 
+void test_unconfigured_dynamic_events(void)
+{
+    const char *fixtures[] = {
+        "./fakefs/syspmu_multinode",
+        "./fakefs/syspmu_core",
+        "./fakefs/syspmu_hvgpci",
+        "./fakefs/syspmu"
+    };
+    int counts[] = { 2, 6, 8, 5 };
+    struct pmcsetting unrelated = { .name = "software.cpu-clock" };
+    struct pmu *pmus, *pmu;
+    struct pmu_event *event;
+    int i, pass, count;
+
+    printf(" ===== %s ====\n", __FUNCTION__);
+
+    for (i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+        setenv("SYSFS_PREFIX", fixtures[i], 1);
+        /* Both an empty configuration and one selecting only another PMU
+         * must leave unresolved events unavailable without losing the PMU.
+         */
+        for (pass = 0; pass < 2; pass++) {
+            pmus = NULL;
+            count = 0;
+            assert(init_dynamic_events(&pmus, pass ? &unrelated : NULL) == 0);
+            for (pmu = pmus; pmu; pmu = pmu->next) {
+                for (event = pmu->ev; event; event = event->next) {
+                    if (!strcmp(pmu->name, "software")) {
+                        assert(event->config_valid);
+                        continue;
+                    }
+                    count++;
+                    if (i == 3) {
+                        /* Fully specified, unlisted events remain usable. */
+                        assert(event->config_valid);
+                    } else {
+                        assert(!event->config_valid);
+                        assert(event->config == 0);
+                        assert(event->config1 == 0);
+                        assert(event->config2 == 0);
+                    }
+                }
+            }
+            assert(count == counts[i]);
+            cleanup_pmu_list(pmus);
+        }
+    }
+    unsetenv("SYSFS_PREFIX");
+}
+
 void test_derived_disabled_source(void)
 {
     perfhandle_t *h;
@@ -1389,6 +1439,9 @@ int runtest(int n)
 	    test_parse_hv_gpci_events();
 	    break;
         case 37:
+            test_unconfigured_dynamic_events();
+            break;
+        case 38:
             test_derived_disabled_source();
             break;
         default:

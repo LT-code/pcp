@@ -1397,7 +1397,7 @@ perfhandle_t *perf_event_create(const char *config_file)
     }
 
     free_configuration(perfconfig);
-    free(pmu_list);
+    cleanup_pmu_list(pmu_list);
 
 out:
 

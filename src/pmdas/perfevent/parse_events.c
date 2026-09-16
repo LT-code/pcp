@@ -156,6 +156,7 @@ static int setup_sw_events(struct pmu_event **events, struct pmu *pmu)
             return -E_PERFEVENT_REALLOC;
         }
         tmp->config = sw_events[i].config;
+        tmp->config_valid = 1;
         tmp->pmu = pmu;
         if (!head || strcmp(head->name, tmp->name) >= 0) {
             tmp->next = head;
@@ -416,7 +417,7 @@ static int parse_event_string(char *buf, struct pmu_event *event,
     struct property_info *pi, *head, *tmp = NULL;
     char *start, *ptr, *nptr, **endptr, *str, eventname[BUF_SIZE], ev_str[BUF_SIZE], pmc_str[BUF_SIZE], *tmp_buf_str;
     struct pmcsetting *pmctmp;
-    int i, ret, sub_ev_cnt = 0;
+    int i, ret, sub_ev_cnt = 0, listed;
     struct pmu_event *sub_event = NULL, *ev_tmp = NULL;
 
     pmsprintf(ev_str, sizeof(ev_str), "%s.%s", pmu_name, event->name);
@@ -426,6 +427,26 @@ static int parse_event_string(char *buf, struct pmu_event *event,
 
     if (sub_ev_cnt > 1)
 	*new_events = sub_ev_cnt;
+
+    /*
+     * An event that is not named in the [dynamic] section is still
+     * enumerated, and its encoding is still needed so that it can be opened
+     * later on demand -- see the -E option and the pmStore support on
+     * perfevent.hwcounters.<counter>.enabled.  Make one pass for it.
+     */
+    listed = (sub_ev_cnt > 0);
+    /* Parameterized events need a configuration entry to resolve '?'.
+     * Keep unconfigured events in the namespace, but never open an encoding
+     * with those parameters silently replaced by zero.
+     */
+    if (!listed && strchr(buf, '?')) {
+	event->config = event->config1 = event->config2 = 0;
+	event->config_valid = 0;
+	event->pmu = pmu;
+	return 0;
+    }
+    if (sub_ev_cnt == 0)
+	sub_ev_cnt = 1;
 
     for (i = 0; i < (sub_ev_cnt - 1); i++) {
 	ev_tmp = calloc(1, sizeof(*ev_tmp));
@@ -520,7 +541,7 @@ static int parse_event_string(char *buf, struct pmu_event *event,
 			    break;
 			}
 		    }
-		} else if (!strcmp(pi->name, "lpar") && (pmctmp->domain > 2) && pmctmp->lpar) {
+		} else if (!strcmp(pi->name, "lpar") && pmctmp && (pmctmp->domain > 2) && pmctmp->lpar) {
 		    for (pmctmp = dynamicpmc; pmctmp; pmctmp = pmctmp->next) {
 		        if (!strncmp(eventname, pmctmp->name, strlen(pmctmp->name)))
 			{
@@ -634,7 +655,7 @@ static int parse_event_string(char *buf, struct pmu_event *event,
 			    break;
 			}
 		    }
-		} else if (!strcmp(pi->name, "lpar")  && (pmctmp->domain > 2) && pmctmp->lpar) {
+		} else if (!strcmp(pi->name, "lpar") && pmctmp && (pmctmp->domain > 2) && pmctmp->lpar) {
 		    for (pmctmp = dynamicpmc; pmctmp; pmctmp = pmctmp->next) {
 		        if (!strncmp(eventname, pmctmp->name, strlen(pmctmp->name)))
 			{
@@ -707,8 +728,21 @@ static int parse_event_string(char *buf, struct pmu_event *event,
 	}
 	free(tmp_buf_str);
 	ret = fetch_event_config(head, event, pmu);
-	if (ret)
-	    return ret;
+	cleanup_property_info(head);
+	if (ret) {
+	    /*
+	     * A requested event that cannot be encoded is an error, but an
+	     * event nobody asked for must not bring down the whole PMU: mark
+	     * it unusable and carry on, so that it still appears in the
+	     * namespace exactly as it did before.
+	     */
+	    if (listed)
+		return ret;
+	    event->config = event->config1 = event->config2 = 0;
+	    event->config_valid = 0;
+	} else {
+	    event->config_valid = 1;
+	}
 
 	event->pmu = pmu;
 	event = event->next;

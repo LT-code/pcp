@@ -44,6 +44,7 @@ struct pmu_event {
     unsigned long long config;
     unsigned long long config1;
     unsigned long long config2;
+    int config_valid;                 /* the encoding above is usable */
     double scale;
     struct pmu *pmu;                  /* Back pointer to its pmu */
     struct pmu_event *next;
