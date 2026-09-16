@@ -1,0 +1,60 @@
+QA output created by 2110
+
+=== control metrics are present ===
+perfevent.control.enabled
+perfevent.control.lock_held
+
+=== control metric descriptors ===
+perfevent.control.enabled
+    Data Type: 32-bit unsigned int  InDom: PM_INDOM_NULL 0xffffffff
+    Semantics: discrete  Units: none
+perfevent.control.lock_held
+    Data Type: 32-bit unsigned int  InDom: PM_INDOM_NULL 0xffffffff
+    Semantics: instant  Units: none
+
+=== default state ===
+perfevent.control.enabled = 1
+perfevent.control.lock_held = 0
+counters collecting
+perfevent.derived.clocks.value has values
+
+=== global switch: off, then on ===
+perfevent.control.enabled new value=0
+perfevent.control.enabled = 0
+counters stopped
+perfevent.control.enabled new value=1
+perfevent.control.enabled = 1
+counters collecting
+
+=== an external perfalloc(1) lock overrides pmstore ===
+perfevent.control.lock_held = 1
+counters stopped
+--- storing 1 while the lock is held ---
+perfevent.control.enabled new value=1
+the request is recorded ...
+perfevent.control.enabled = 1
+... but the counters stay stopped
+counters stopped
+--- releasing the lock ---
+perfevent.control.lock_held = 0
+counters collecting
+
+=== values outside 0..1 are rejected ===
+perfevent.control.enabled: new value="2" pmStore: Bad input to pmstore
+state is unchanged:
+perfevent.control.enabled = 1
+
+=== a value of the wrong type is rejected ===
+The value "not-a-number" is incompatible with the data type (PM_TYPE_U32)
+
+=== read-only metrics are rejected ===
+perfevent.version: new value="0" pmStore: No permission to perform requested operation
+perfevent.active: new value="0" pmStore: No permission to perform requested operation
+perfevent.control.lock_held: new value="0" pmStore: No permission to perform requested operation
+perfevent.derived.active: new value="0" pmStore: No permission to perform requested operation
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.value: new value="0" pmStore: No permission to perform requested operation
+perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK.dutycycle: new value="0" pmStore: No permission to perform requested operation
+
+=== storing does not require privilege ===
+perfevent.control.enabled new value=0
+perfevent.control.enabled new value=1

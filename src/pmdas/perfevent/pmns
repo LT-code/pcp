@@ -17,6 +17,12 @@
 perfevent {
     version    PERFEVENT:0:0
     active     PERFEVENT:0:1
+    control
     hwcounters PERFEVENT:*:*
     derived    PERFEVENT:*:*
+}
+
+perfevent.control {
+    enabled    PERFEVENT:0:2
+    lock_held  PERFEVENT:0:3
 }

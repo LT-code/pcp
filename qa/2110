@@ -1,0 +1,227 @@
+#!/bin/sh
+# PCP QA Test No. 2110
+# Exercise the perfevent PMDA pmstore controls:
+# - the global perfevent.control.enabled switch
+# - an external perfalloc(1) lock overriding the global switch
+#
+# Copyright (c) 2026 Thomas Lopez.  All Rights Reserved.
+#
+
+seq=`basename $0`
+echo "QA output created by $seq"
+
+# get standard environment, filters and checks
+. ./common.product
+. ./common.filter
+. ./common.check
+
+test -e $PCP_PMDAS_DIR/perfevent/pmdaperfevent || _notrun "Optional perfevent PMDA not present"
+
+status=1	# failure is the default!
+perfalloc_pid=""
+
+# the counters come from qa/perfevent/config/test_controls.txt, which asks for
+# software events that are available on every architecture
+COUNTER=perfevent.hwcounters.perf__PERF_COUNT_SW_CPU_CLOCK
+OTHER=perfevent.hwcounters.perf__PERF_COUNT_SW_TASK_CLOCK
+DERIVED=perfevent.derived.clocks.value
+
+_cleanup()
+{
+    # release the lock first, or the counters stay off
+    $sudo pkill -f "$PCP_PMDAS_DIR/perfevent/perfalloc" 2>/dev/null
+    perfalloc_pid=""
+    # never leave the counters switched off for the tests that follow
+    pmstore perfevent.control.enabled 1 >/dev/null 2>&1
+
+    if [ -f $tmp.backup ]
+    then
+	$sudo cp $tmp.backup $PCP_PMDAS_DIR/perfevent/perfevent.conf
+	$sudo rm -f $tmp.backup
+    else
+	$sudo rm -f $PCP_PMDAS_DIR/perfevent/perfevent.conf
+    fi
+    cd $here
+    # Keep the teardown out of the expected output: how pmcd is managed
+    # varies between machines, and none of it is what this test checks.
+    # note: _restore_auto_restart pmcd is done by _cleanup_pmda()
+    _cleanup_pmda perfevent >>$seq_full 2>&1
+    $sudo rm -rf $tmp $tmp.*
+}
+
+_prepare_pmda perfevent
+trap "_cleanup; exit \$status" 0 1 2 3 15
+
+_stop_auto_restart pmcd
+
+# pmstore reports "metric old value=X new value=Y".  The old value depends
+# on what ran before, so only report what the store actually set.
+#
+_filter_store()
+{
+    tee -a $seq_full \
+    | sed -e 's/ old value=[^ ]*//'
+}
+
+# Report the value of a singular control metric, and nothing else.
+#
+_control()
+{
+    pminfo -f $1 2>&1 \
+    | tee -a $seq_full \
+    | sed -n -e "s/^ *value /$1 = /p"
+}
+
+# Report whether a counter is producing values.  The values themselves are
+# timing dependent, so they must never reach the output.
+#
+_values()
+{
+    pmprobe $1 2>&1 \
+    | tee -a $seq_full \
+    | $PCP_AWK_PROG '
+	{ if ($2 > 0)		print $1, "has values"
+	  else if ($2 == 0)	print $1, "no instances"
+	  else			print $1, "no values" }'
+}
+
+# perfevent.active counts the counters read on the last fetch, so it is zero
+# exactly when collection is stopped.
+#
+_collecting()
+{
+    pmprobe -v perfevent.active 2>&1 \
+    | tee -a $seq_full \
+    | $PCP_AWK_PROG '
+	{ if ($2 < 0)		print "perfevent.active: no value"
+	  else if ($3 == 0)	print "counters stopped"
+	  else			print "counters collecting" }'
+}
+
+# By design the first fetch after the counters are re-enabled reports no
+# values: perfevent says the counters cannot be trusted across a disable.
+# Consume that fetch so the assertions that follow are deterministic.
+#
+_settle()
+{
+    pmprobe perfevent.active >>$seq_full 2>&1
+}
+
+perfevent_install()
+{
+    # start from a known state
+    cd $PCP_PMDAS_DIR/perfevent
+    $sudo ./Remove >/dev/null 2>&1
+
+    [ -f $PCP_PMDAS_DIR/perfevent/perfevent.conf ] && \
+    $sudo cp $PCP_PMDAS_DIR/perfevent/perfevent.conf $tmp.backup
+    $sudo cp $here/perfevent/config/test_controls.txt $PCP_PMDAS_DIR/perfevent/perfevent.conf
+
+    $sudo ./Install </dev/null >$tmp.out 2>&1
+    cd $here
+
+    # warnings here mean no usable perf events on this machine
+    if grep 'warnings' $tmp.out >/dev/null 2>&1
+    then
+	cat $tmp.out >>$seq_full
+	_notrun "perfevents not found on this platform"
+    fi
+
+    # the rest of the test is written around these two counters
+    pminfo $COUNTER.value $OTHER.value >/dev/null 2>&1 || {
+	cat $tmp.out >>$seq_full
+	pminfo perfevent >>$seq_full 2>&1
+	_notrun "expected perfevent software counters are not available"
+    }
+    pmprobe $COUNTER.value 2>&1 | $PCP_AWK_PROG '$2 <= 0 { exit 1 }' || {
+	pminfo -f perfevent >>$seq_full 2>&1
+	_notrun "perfevent counters are configured but produce no values"
+	}
+}
+
+# real QA test starts here
+perfevent_install
+
+echo
+echo "=== control metrics are present ==="
+pminfo perfevent.control
+
+echo
+echo "=== control metric descriptors ==="
+pminfo -d perfevent.control.enabled perfevent.control.lock_held 2>&1 \
+| sed -e '/^$/d'
+
+echo
+echo "=== default state ==="
+_control perfevent.control.enabled
+_control perfevent.control.lock_held
+_collecting
+_values $DERIVED
+
+echo
+echo "=== global switch: off, then on ==="
+pmstore perfevent.control.enabled 0 | _filter_store
+_settle
+_control perfevent.control.enabled
+_collecting
+pmstore perfevent.control.enabled 1 | _filter_store
+_settle
+_control perfevent.control.enabled
+_collecting
+
+echo
+echo "=== an external perfalloc(1) lock overrides pmstore ==="
+# perfalloc needs write access to the lock file, which the PMDA created as
+# root, so it has to run privileged.  -d detaches, so find it by name.
+$sudo $PCP_PMDAS_DIR/perfevent/perfalloc -d >>$seq_full 2>&1
+pmsleep 1.0		# the lock file is polled every 100ms
+perfalloc_pid=`pgrep -f "$PCP_PMDAS_DIR/perfevent/perfalloc" | head -1`
+if [ -z "$perfalloc_pid" ]
+then
+    echo "Warning: perfalloc did not start, skipping the lock checks" \
+    | tee -a $seq_full
+else
+_settle
+_control perfevent.control.lock_held
+_collecting
+echo "--- storing 1 while the lock is held ---"
+pmstore perfevent.control.enabled 1 | _filter_store
+echo "the request is recorded ..."
+_control perfevent.control.enabled
+echo "... but the counters stay stopped"
+_collecting
+echo "--- releasing the lock ---"
+$sudo kill $perfalloc_pid 2>/dev/null
+perfalloc_pid=""
+pmsleep 1.0
+_settle
+_control perfevent.control.lock_held
+_collecting
+fi
+
+echo
+echo "=== values outside 0..1 are rejected ==="
+pmstore perfevent.control.enabled 2 2>&1 | _filter_store
+echo "state is unchanged:"
+_control perfevent.control.enabled
+
+echo
+echo "=== a value of the wrong type is rejected ==="
+pmstore perfevent.control.enabled not-a-number 2>&1 | _filter_store
+
+echo
+echo "=== read-only metrics are rejected ==="
+for metric in perfevent.version perfevent.active perfevent.control.lock_held \
+	      perfevent.derived.active $COUNTER.value $COUNTER.dutycycle
+do
+    pmstore $metric 0 2>&1 | _filter_store
+done
+
+echo
+echo "=== storing does not require privilege ==="
+pmstore perfevent.control.enabled 0 | _filter_store
+pmstore perfevent.control.enabled 1 | _filter_store
+
+# success, all done
+status=0
+exit

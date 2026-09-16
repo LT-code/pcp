@@ -1,0 +1,9 @@
+# Software counters and a derived metric for the pmStore control tests.
+[perf]
+perf::PERF_COUNT_SW_CPU_CLOCK
+perf::PERF_COUNT_SW_TASK_CLOCK
+perf::PERF_COUNT_SW_PAGE_FAULTS
+
+[clocks:derived]
+perf::PERF_COUNT_SW_CPU_CLOCK
+perf::PERF_COUNT_SW_TASK_CLOCK

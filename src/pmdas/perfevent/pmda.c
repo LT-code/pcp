@@ -35,6 +35,13 @@
  *	perfevent.active
  *	        number of active hardware counters
  *
+ *	perfevent.control.enabled
+ *	        master on/off switch for all of the hardware counters, set
+ *	        with pmStore(3).  An external perfalloc(1) lock overrides it.
+ *
+ *	perfevent.control.lock_held
+ *	        whether an external perfalloc(1) lock is currently held
+ *
  *	perfevent.hwcounters.{HWCOUNTER}.value
  *	        the value of the counter. Per-cpu counters have mulitple instances,
  *	        one for each CPU. Uncore/Northbridge counters only have one
@@ -106,7 +113,11 @@ static pmdaMetric static_metrictab[] =
     /* perfevent.version */
     { NULL, { PMDA_PMID(0,0), PM_TYPE_STRING, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) } },
     /* perfevent.active */
-    { NULL, { PMDA_PMID(0,1), PM_TYPE_32, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) } }
+    { NULL, { PMDA_PMID(0,1), PM_TYPE_32, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) } },
+    /* perfevent.control.enabled */
+    { NULL, { PMDA_PMID(0,2), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_DISCRETE, PMDA_PMUNITS(0,0,0,0,0,0) } },
+    /* perfevent.control.lock_held */
+    { NULL, { PMDA_PMID(0,3), PM_TYPE_U32, PM_INDOM_NULL, PM_SEM_INSTANT, PMDA_PMUNITS(0,0,0,0,0,0) } }
 };
 
 #define NUM_STATIC_METRICS (sizeof(static_metrictab)/sizeof(static_metrictab[0]))
@@ -216,6 +227,19 @@ static int perfevent_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomV
             atom->l = activecounters;
             return 1;
         }
+        else if( item == 2)
+        {
+            /* what was asked for, not what an external lock allows, so that
+             * a store followed by a fetch round trips
+             */
+            atom->ul = perf_counter_desired(perfif);
+            return 1;
+        }
+        else if( item == 3)
+        {
+            atom->ul = perf_lock_held(perfif);
+            return 1;
+        }
         else
         {
             return PM_ERR_PMID;
@@ -295,6 +319,49 @@ static int perfevent_fetch(int numpmid, pmID pmidlist[], pmdaResult **resp, pmda
 
     pmdaEventNewClient(pmda->e_context);
     return pmdaFetch(numpmid, pmidlist, resp, pmda);
+}
+
+/*
+ * Handle pmStore requests for the control metrics.  Everything else is
+ * read-only.
+ */
+static int perfevent_store(pmdaResult *result, pmdaExt *pmda)
+{
+    int		i, sts;
+
+    pmdaEventNewClient(pmda->e_context);
+
+    for (i = 0; i < result->numpmid; i++)
+    {
+	pmValueSet	*vsp = result->vset[i];
+	unsigned int	cluster = pmID_cluster(vsp->pmid);
+	unsigned int	item = pmID_item(vsp->pmid);
+	pmAtomValue	av;
+	pmDesc		desc;
+	int		enable;
+
+	if ((sts = pmdaDesc(vsp->pmid, &desc, pmda)) < 0)
+	    return sts;
+
+	/* Only the global enabled metric is writable. */
+	if (cluster != 0 || item != 2)
+	    return PM_ERR_PERMISSION;
+
+	if (vsp->numval != 1 || vsp->vlist[0].inst != PM_IN_NULL)
+	    return PM_ERR_INST;
+	if ((sts = pmExtractValue(vsp->valfmt, &vsp->vlist[0],
+				  PM_TYPE_U32, &av, PM_TYPE_U32)) < 0)
+	    return sts;
+	if (av.ul > 1)
+	    return PM_ERR_BADSTORE;
+
+	enable = av.ul ? PERF_COUNTER_ENABLE : PERF_COUNTER_DISABLE;
+	sts = perf_counter_request_enable(perfif, enable);
+	if (sts < 0)
+	    return PM_ERR_PERMISSION;
+    }
+
+    return 0;
 }
 
 static int perfevent_labelCallBack(pmInDom indom, unsigned int inst, pmLabelSet **lp)
@@ -724,6 +791,7 @@ perfevent_init(pmdaInterface *dp)
 
     dp->version.seven.profile = perfevent_profile;
     dp->version.seven.fetch = perfevent_fetch;
+    dp->version.seven.store = perfevent_store;
     dp->version.seven.label = perfevent_label;
     dp->version.seven.text = perfevent_text;
     dp->version.seven.pmid = perfevent_pmid;

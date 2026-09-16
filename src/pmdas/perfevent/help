@@ -17,3 +17,23 @@
 @ perfevent.version The version number of the pmda.
 @ perfevent.active The number of active counters.
 
+@ perfevent.control.enabled Master switch for all of the hardware counters
+Store one to enable the configured hardware counters, zero to disable them.
+
+The counters only collect when this is one AND no perfalloc(1) read lock is
+held on the perfevent lock file.  An external lock always wins, so storing one
+while a lock is held records the request but leaves the counters off until the
+lock is released; perfevent.control.lock_held reports whether that is the case.
+
+While the counters are disabled their values stay frozen at the last reading
+rather than being reported as errors, and perfevent.active reads zero.  This
+is the same behaviour as an external perfalloc(1) lock.  Defaults to one.
+
+@ perfevent.control.lock_held Whether an external perfalloc(1) lock is held
+One when another process holds a read lock on the perfevent lock file, in
+which case the hardware counters are disabled whatever perfevent.control.enabled
+says.  Zero otherwise.  Read-only.
+
+The lock file is polled every 100 milliseconds, so this can lag a perfalloc(1)
+invocation by that much.
+

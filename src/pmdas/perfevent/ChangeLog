@@ -1,3 +1,7 @@
+1.1.0:
+	Added pmStore support.  perfevent.control.enabled is a master on/off
+	switch for all of the counters.  An external perfalloc(1) lock still
+	overrides it.
 1.0.1:
 	Added support for RAPL counters on Intel architectures.
 1.0.0:

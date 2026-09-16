@@ -18,6 +18,8 @@
 
 #include "perfmanager.h"
 
+#include "pmapi.h"
+
 #include <pthread.h>
 #include <time.h>
 #include <fcntl.h>
@@ -37,7 +39,9 @@ typedef struct monitor {
     int running;
 
     pthread_mutex_t counter_mutex;
-    int counter_state;
+    int counter_state;		/* state the counters are actually in */
+    int desired_state;		/* state requested with pmStore */
+    int lock_state;		/* ENABLE when no perfalloc(1) lock is held */
     int lockfp;
 
     int has_been_disabled;
@@ -106,6 +110,11 @@ static monitor_t *monitor_init(int lockfp, perfhandle_t *perf)
     m->running = 1;
     pthread_mutex_init(&m->counter_mutex, NULL);
     m->counter_state = PERF_COUNTER_DISABLE;
+    m->desired_state = PERF_COUNTER_ENABLE;
+    /* the lock file has not been polled yet, so assume the worst until it
+     * has been: this is what the counters did before pmStore was supported
+     */
+    m->lock_state = PERF_COUNTER_DISABLE;
     m->lockfp = lockfp;
     m->first_time = 1;
     m->has_been_disabled = 1;
@@ -124,6 +133,32 @@ static void monitor_destroy(monitor_t *del)
     pthread_mutex_destroy(&del->mutex);
 
     free(del);
+}
+
+/* \brief bring the counters into line with the requested state.
+ *
+ * The counters run only when they have been enabled with pmStore and no
+ * external perfalloc(1) lock is held: the lock always wins.
+ *
+ * The caller must hold counter_mutex.
+ */
+static void monitor_apply(monitor_t *m)
+{
+    int want = (m->desired_state == PERF_COUNTER_ENABLE &&
+                m->lock_state == PERF_COUNTER_ENABLE)
+             ? PERF_COUNTER_ENABLE : PERF_COUNTER_DISABLE;
+
+    if(m->counter_state == want)
+    {
+        return;
+    }
+
+    perf_counter_enable(m->perf, want);
+    if(want == PERF_COUNTER_DISABLE)
+    {
+        m->has_been_disabled = 1;
+    }
+    m->counter_state = want;
 }
 
 int perf_get_r(perfmanagerhandle_t *inst, perf_counter **data, int *size, perf_derived_counter **derived_counter, int *derived_size)
@@ -166,6 +201,43 @@ int perf_enabled(perfmanagerhandle_t *inst)
     return res;
 }
 
+int perf_lock_held(perfmanagerhandle_t *inst)
+{
+    monitor_t *m = ((manager_t *)inst)->monitor;
+    int res;
+
+    pthread_mutex_lock( &m->counter_mutex );
+    res = m->lock_state != PERF_COUNTER_ENABLE;
+    pthread_mutex_unlock( &m->counter_mutex );
+
+    return res;
+}
+
+int perf_counter_request_enable(perfmanagerhandle_t *inst, int enable)
+{
+    monitor_t *m = ((manager_t *)inst)->monitor;
+
+    pthread_mutex_lock( &m->counter_mutex );
+    m->desired_state = enable;
+    /* apply it here rather than waiting for the next poll of the lock file */
+    monitor_apply(m);
+    pthread_mutex_unlock( &m->counter_mutex );
+
+    return 0;
+}
+
+int perf_counter_desired(perfmanagerhandle_t *inst)
+{
+    monitor_t *m = ((manager_t *)inst)->monitor;
+    int res;
+
+    pthread_mutex_lock( &m->counter_mutex );
+    res = m->desired_state == PERF_COUNTER_ENABLE;
+    pthread_mutex_unlock( &m->counter_mutex );
+
+    return res;
+}
+
 static void *runner(void *data)
 {
     struct timespec ts;
@@ -187,19 +259,13 @@ static void *runner(void *data)
             res = checkfile( this->lockfp );
             if ( res != -1 ) {
                 pthread_mutex_lock(&this->counter_mutex);
-                if ( this->counter_state != res ) {
-                    perf_counter_enable( this->perf, res );
-                    if( res == PERF_COUNTER_DISABLE) 
-                    {
-                        this->has_been_disabled = 1;
-                    }
-                    this->counter_state = res;
-                }
+                this->lock_state = res;
+                monitor_apply(this);
                 pthread_mutex_unlock(&this->counter_mutex);
             }
             else {
-                fprintf(stderr, "TODO");
-                // Handle error
+                pmNotifyErr(LOG_ERR, "unable to check the perfevent lock file: %s\n",
+                            strerror(errno));
             }
         }
 

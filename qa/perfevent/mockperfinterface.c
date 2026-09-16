@@ -7,7 +7,8 @@ perfhandle_t *perf_event_create(const char *configfile)
     return malloc(1);
 }
 
-void perf_counter_destroy(perf_counter *data, int size)
+void perf_counter_destroy(perf_counter *data, int size,
+                          perf_derived_counter *derived_counter, int derived_size)
 {
 }
 
@@ -22,7 +23,8 @@ int perf_counter_enable(perfhandle_t *inst, int enable)
     return 0;
 }
 
-int perf_get(perfhandle_t *inst, perf_counter **data, int *size)
+int perf_get(perfhandle_t *inst, perf_counter **data, int *size,
+             perf_derived_counter **derived_counter, int *derived_size)
 {
     return -E_PERFEVENT_RUNTIME;
 }
