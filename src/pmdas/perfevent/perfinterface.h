@@ -77,6 +77,16 @@ typedef struct event_t_ {
     int ncpus;			/* number of cpus successfully opened */
 
     int user_enabled;		/* per-counter state requested via pmStore */
+
+    /* Encoding and cpu placement, stashed so that an event which was not
+     * opened during setup can still be opened later on demand.
+     */
+    uint32_t pmu_type;
+    uint64_t config;
+    uint64_t config1;
+    uint64_t config2;
+    int *cpuarr;
+    int ncpus_configured;
 } event_t;
 
 typedef struct event_list_t_ {
@@ -135,6 +145,12 @@ int perf_counter_enable_one(perfhandle_t *inst, int idx, int enable);
  */
 int perf_counter_set_user_enabled(perfhandle_t *inst, int idx, int enabled);
 int perf_counter_get_user_enabled(perfhandle_t *inst, int idx);
+
+/* Open a counter that was discovered but not configured at startup.  This
+ * needs privileges the PMDA has usually dropped by now, so it is best effort.
+ * Already opened counters, including RAPL counters, are left alone.
+ */
+int perf_counter_open_late(perfhandle_t *inst, int idx);
 
 int perf_get(perfhandle_t *inst, perf_counter **data, int *size, perf_derived_counter **derived_counter, int *derived_size);
 

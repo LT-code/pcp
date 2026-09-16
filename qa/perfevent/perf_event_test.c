@@ -37,6 +37,20 @@ void test_init()
     assert(nevents == 2);
     assert(data != NULL);
 
+    /* Enabling an already opened counter must not open it again, even if
+     * the user has temporarily switched it off.
+     */
+    int opens = n_perf_event_open_calls;
+    int instances = data[0].ninstances;
+    assert(perf_counter_open_late(h, 0) == instances);
+    assert(perf_counter_set_user_enabled(h, 0, 0) == 0);
+    assert(perf_counter_open_late(h, 0) == instances);
+    assert(!perf_counter_get_user_enabled(h, 0));
+    assert(n_perf_event_open_calls == opens);
+    assert(perf_counter_set_user_enabled(h, 0, 1) == 0);
+    assert(perf_counter_open_late(h, -1) == -E_PERFEVENT_LOGIC);
+    assert(perf_counter_open_late(h, nevents) == -E_PERFEVENT_LOGIC);
+
     /* Check that the data and pdata buffer gets reused in the next call to perf_get */
 
     perf_counter *olddata = data;

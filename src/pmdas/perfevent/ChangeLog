@@ -2,7 +2,8 @@
 	Added pmStore support.  perfevent.control.enabled is a master on/off
 	switch for all of the counters, and perfevent.hwcounters.<counter>.enabled
 	switches an individual counter.  An external perfalloc(1) lock still
-	overrides both.
+	overrides both.  Unconfigured dynamic events can be opened on demand
+	when runtime permissions allow it.
 	Leave unconfigured parameterized events unavailable until their
 	parameters are supplied, and handle unconfigured lpar fields safely.
 	Suppress derived values while any source counter is disabled.

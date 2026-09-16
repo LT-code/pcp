@@ -245,10 +245,17 @@ int perf_counter_request_enable_one(perfmanagerhandle_t *inst, int idx, int enab
 
     pthread_mutex_lock( &m->counter_mutex );
 
-    sts = perf_counter_set_user_enabled(m->perf, idx, enable == PERF_COUNTER_ENABLE);
+    /* Already opened counters are left alone. */
+    if( enable == PERF_COUNTER_ENABLE &&
+        perf_counter_open_late(m->perf, idx) < 0 )
+    {
+        sts = -E_PERFEVENT_RUNTIME;
+    }
 
     if( sts == 0 )
     {
+        perf_counter_set_user_enabled(m->perf, idx, enable == PERF_COUNTER_ENABLE);
+
         if( m->counter_state == PERF_COUNTER_ENABLE )
         {
             perf_counter_enable_one(m->perf, idx, enable);

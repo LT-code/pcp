@@ -41,6 +41,12 @@ int perf_counter_get_user_enabled(perfhandle_t *inst, int idx)
     return 1;
 }
 
+int perf_counter_open_late(perfhandle_t *inst, int idx)
+{
+    /* Mock counters are already open. */
+    return 1;
+}
+
 int perf_get(perfhandle_t *inst, perf_counter **data, int *size,
              perf_derived_counter **derived_counter, int *derived_size)
 {

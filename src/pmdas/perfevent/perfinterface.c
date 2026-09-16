@@ -81,6 +81,7 @@ static void free_event(event_t *del)
 
     free(del->info);
     free(del->name);
+    free(del->cpuarr);
 }
 
 static void free_perfdata(perfdata_t *del)
@@ -689,6 +690,78 @@ static int perf_setup_event(perfdata_t *inst, const char *eventname,
     return ret;
 }
 
+/* \brief open every configured cpu for an event from its stashed encoding.
+ *
+ * This is used both during setup and, on a best effort basis, when a counter
+ * that was discovered but not configured is enabled at runtime via pmStore.
+ * The event is opened in the disabled state; perf_counter_enable() is what
+ * actually starts it counting.
+ *
+ * Idempotent: an event which already has open file descriptors is left alone.
+ *
+ * \returns the number of cpus opened, or a negative E_PERFEVENT_* code.
+ */
+static int event_stash_open(event_t *ev, int quiet)
+{
+    int i;
+
+    if(ev->ncpus > 0)
+    {
+        return ev->ncpus;
+    }
+
+    if(NULL == ev->cpuarr || ev->ncpus_configured <= 0)
+    {
+        return -E_PERFEVENT_LOGIC;
+    }
+
+    ev->info = calloc(ev->ncpus_configured, sizeof *(ev->info));
+    if(NULL == ev->info)
+    {
+        return -E_PERFEVENT_REALLOC;
+    }
+
+    for(i = 0; i < ev->ncpus_configured; ++i)
+    {
+        eventcpuinfo_t *info = &ev->info[ev->ncpus];
+
+        memset(info, 0, sizeof *info);
+        info->fd = -1;
+        info->cpu = ev->cpuarr[i];
+        info->type = EVENT_TYPE_PERF;
+        info->hw.type = ev->pmu_type;
+        info->hw.size = sizeof(info->hw);
+        info->hw.config = ev->config;
+        info->hw.config1 = ev->config1;
+        info->hw.config2 = ev->config2;
+        info->hw.disabled = 1;
+        info->hw.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
+
+        info->fd = perf_event_open(&info->hw, -1, info->cpu, -1, 0);
+        if(info->fd == -1)
+        {
+            if(!quiet)
+            {
+                fprintf(stderr, "perf_event_open failed on cpu%d for \"%s\": %s\n",
+                        info->cpu, ev->name, strerror(errno) );
+            }
+            continue;
+        }
+
+        ++(ev->ncpus);
+    }
+
+    if(ev->ncpus == 0)
+    {
+        free(ev->info);
+        ev->info = NULL;
+        return -E_PERFEVENT_RUNTIME;
+    }
+
+    ev->disable_event = 0;
+    return ev->ncpus;
+}
+
 /*
  * Setup the dynamic events
  */
@@ -696,7 +769,7 @@ static int perf_setup_dynamic_events(perfdata_t *inst,
 				     pmcsetting_t *dynamic_setting,
 				     struct pmu *pmu_list)
 {
-    int i, ncpus, ret = 0, *cpuarr = NULL, nevents = inst->nevents, *cpumask = NULL;
+    int ncpus, ret = 0, *cpuarr = NULL, nevents = inst->nevents, *cpumask = NULL;
     event_t *evp, *events = inst->events;
     archinfo_t *archinfo = inst->archinfo;
     struct pmu *pmu_ptr;
@@ -756,64 +829,44 @@ static int perf_setup_dynamic_events(perfdata_t *inst,
 		}
 	    }
             event_t *curr = events + nevents;
+
+            /* the memory came from realloc(), so nothing in it is valid yet */
             memset(curr, 0, sizeof *curr);
-            curr->user_enabled = !disable_event;
             curr->name = strdup(eventname);
+            curr->disable_event = 1;
+            curr->pmu_type = pmu_ptr->type;
+            curr->config = event_ptr->config;
+            curr->config1 = event_ptr->config1;
+            curr->config2 = event_ptr->config2;
 
-            curr->disable_event = disable_event;
-            if (disable_event) {
-                ++nevents;
-                ret = 0;
-                continue;
-            }
-            curr->info = calloc(ncpus, sizeof *(curr->info));
-            curr->ncpus = 0;
-
-            eventcpuinfo_t *info = &curr->info[0];
-
-            for(i = 0; i < ncpus; ++i) {
-                memset(info, 0, sizeof *info);
-                info->fd = -1;
-                info->cpu = cpuarr[i];
-                info->type = EVENT_TYPE_PERF;
-                info->hw.size = sizeof(info->hw);
-
-                pfm_perf_encode_arg_t arg;
-                memset(&arg, 0, sizeof(arg));
-
-                info->idx = arg.idx;
-
-                info->hw.type = pmu_ptr->type;
-                info->hw.size = sizeof(info->hw);
-                info->hw.config = event_ptr->config;
-                info->hw.config1 = event_ptr->config1;
-                info->hw.config2 = event_ptr->config2;
-                info->hw.disabled = 1;
-                info->hw.read_format = PERF_FORMAT_TOTAL_TIME_ENABLED | PERF_FORMAT_TOTAL_TIME_RUNNING;
-
-                info->fd = perf_event_open(&info->hw, -1, info->cpu, -1, 0);
-                if(info->fd == -1) {
-                    fprintf(stderr, "perf_event_open failed on cpu%d for \"%s\": %s\n",
-                            info->cpu, curr->name, strerror(errno) );
-                    free_eventcpuinfo(info);
-                    continue;
+            /* Stash the cpu placement so that an event which is not opened
+             * here can still be opened later on demand.  An event whose
+             * encoding could not be worked out is left with no cpus, so that
+             * it is never opened with a bogus config and silently reports
+             * zeroes.
+             */
+            if(event_ptr->config_valid) {
+                curr->cpuarr = malloc(ncpus * sizeof(*curr->cpuarr));
+                if(curr->cpuarr != NULL) {
+                    memcpy(curr->cpuarr, cpuarr, ncpus * sizeof(*curr->cpuarr));
+                    curr->ncpus_configured = ncpus;
                 }
-
-                /* The event was configured sucessfully */
-                ++info;
-                ++(curr->ncpus);
             }
 
             free(cpumask);
             cpumask = NULL;
 
-            if(curr->ncpus > 0) {
-                ++nevents;
-                ret = 0;
-            } else {
-                free_event(curr);
-                ret = -E_PERFEVENT_RUNTIME;
+            if (!disable_event) {
+                curr->user_enabled = 1;
+                if (event_stash_open(curr, 0) < 0) {
+                    free_event(curr);
+                    ret = -E_PERFEVENT_RUNTIME;
+                    continue;
+                }
             }
+
+            ++nevents;
+            ret = 0;
         }
     }
 
@@ -1083,11 +1136,6 @@ int perf_counter_set_user_enabled(perfhandle_t *inst, int idx, int enabled)
         return -E_PERFEVENT_LOGIC;
     }
 
-    if(enabled && pdata->events[idx].disable_event)
-    {
-        return -E_PERFEVENT_RUNTIME;
-    }
-
     pdata->events[idx].user_enabled = (enabled != 0);
     return 0;
 }
@@ -1102,6 +1150,37 @@ int perf_counter_get_user_enabled(perfhandle_t *inst, int idx)
     }
 
     return pdata->events[idx].user_enabled;
+}
+
+int perf_counter_open_late(perfhandle_t *inst, int idx)
+{
+    perfdata_t *pdata = (perfdata_t *)inst;
+    event_t *event;
+    int ret;
+
+    if(idx < 0 || idx >= pdata->nevents)
+    {
+        return -E_PERFEVENT_LOGIC;
+    }
+
+    event = &pdata->events[idx];
+    if(!event->disable_event)
+    {
+        return event->ncpus;
+    }
+
+    ret = event_stash_open(event, 1);
+    if(ret < 0)
+    {
+        /* Opening a system wide counter needs either a permissive
+         * kernel.perf_event_paranoid setting or CAP_PERFMON, and by now the
+         * PMDA is running as an unprivileged user.
+         */
+        pmNotifyErr(LOG_INFO, "unable to open counter \"%s\" on demand: %s\n",
+                    event->name, strerror(errno));
+    }
+
+    return ret;
 }
 
 static perf_counter *get_counter(perf_counter **counters, int size, const char *str)

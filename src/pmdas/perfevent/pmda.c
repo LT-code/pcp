@@ -194,8 +194,9 @@ static const char *dynamic_helptab[] =
     /* perfevent.hwcounters.{HWCOUNTER}.enabled */
     "Whether this counter is collecting.  Store one to enable the counter, zero to\n"
     "disable it.  The counter only collects when this is one, perfevent.control.enabled\n"
-    "is one and no perfalloc(1) lock is held.  Only counters opened at startup can\n"
-    "be enabled."
+    "is one and no perfalloc(1) lock is held.  Counters that were discovered but not\n"
+    "listed in the [dynamic] section of perfevent.conf have no file descriptors open;\n"
+    "enabling one of those needs permission to open a counter at runtime."
 };
 
 static const char *dynamic_derived_helptab[] =
@@ -352,13 +353,73 @@ static int perfevent_profile(pmProfile *prof, pmdaExt *pmda)
     return 0;
 }
 
+/* \brief build or refresh a counter's CPU instance list.
+ *
+ * A counter which was discovered but not configured has no instances until it
+ * is opened, which can happen at runtime via pmStore.  pmdaInit() keeps the
+ * indom table supplied by the caller and reads it on every request, so it can
+ * be updated in place.  Note that pmdaInit() has already rewritten it_indom
+ * from a serial number into a full instance domain identifier, so it must be
+ * left alone here.
+ */
+static int refresh_indom(pmdaIndom *pindom, const perf_data *data, int ninstances)
+{
+    pmdaInstid *oldset = pindom->it_set;
+    pmdaInstid *set = NULL;
+    int oldnuminst = pindom->it_numinst;
+    int i;
+    char cpuname[32];
+
+    if (ninstances == oldnuminst)
+        return 0;
+
+    if (ninstances > 0) {
+        set = calloc(ninstances, sizeof(*set));
+        if (set == NULL)
+            return -ENOMEM;
+    }
+
+    for (i = 0; i < ninstances; ++i)
+    {
+        pmsprintf(cpuname, sizeof(cpuname), "cpu%d", data[i].id);
+        set[i].i_inst = i;
+        set[i].i_name = strdup(cpuname);
+        if (set[i].i_name == NULL) {
+            while (i > 0)
+                free(set[--i].i_name);
+            free(set);
+            return -ENOMEM;
+        }
+    }
+
+    /* publish the new instance list before releasing the old one */
+    pindom->it_set = set;
+    pindom->it_numinst = ninstances;
+
+    for (i = 0; i < oldnuminst; ++i)
+        free(oldset[i].i_name);
+    free(oldset);
+    return 0;
+}
+
 /*
  * This routine is called once for each pmFetch(3) operation, so this
  * is where the hardware counters are read.
  */
 static int perfevent_fetch(int numpmid, pmID pmidlist[], pmdaResult **resp, pmdaExt *pmda)
 {
+    int		i, indom;
+
     activecounters = perf_get_r(perfif, &hwcounters, &nhwcounters, &derived_counters, &nderivedcounters);
+
+    /* a counter enabled with pmStore may have gained instances since the
+     * last fetch
+     */
+    for (i = 0; i < nhwcounters; ++i)
+    {
+        indom = i + NUM_STATIC_INDOMS + NUM_STATIC_DERIVED_INDOMS;
+        refresh_indom(&indomtab[indom], hwcounters[i].data, hwcounters[i].ninstances);
+    }
 
     pmdaEventNewClient(pmda->e_context);
     return pmdaFetch(numpmid, pmidlist, resp, pmda);
@@ -493,46 +554,6 @@ static int perfevent_text(int ident, int type, char **buffer, pmdaExt *pmda)
     return pmdaText(ident, type, buffer, pmda);
 }
 
-/* \brief Setup an instance domain
- * \param pindom pointer to the pmdaIndom struct
- * \param index the index of the instance domain
- * \param instances - how many instances
- * \returns void
- */
-static void config_indom(pmdaIndom *pindom, int index, perf_counter *counter)
-{
-    int i;
-    char cpuname[32];
-
-    pindom->it_indom = index;
-    pindom->it_numinst = counter->ninstances;
-    pindom->it_set = calloc(counter->ninstances, sizeof(pmdaInstid) );
-
-    for(i = 0; i < counter->ninstances; ++i)
-    {
-        pmsprintf(cpuname, sizeof(cpuname), "cpu%d", counter->data[i].id);
-        pindom->it_set[i].i_inst = i;
-        pindom->it_set[i].i_name = strdup(cpuname);
-    }
-}
-
-static void config_indom_derived(pmdaIndom *pindom, int index, perf_derived_counter *derived_counter)
-{
-    int i;
-    char cpuname[32];
-
-    pindom->it_indom = index;
-    pindom->it_numinst = derived_counter->ninstances;
-    pindom->it_set = calloc(derived_counter->ninstances, sizeof(pmdaInstid) );
-
-    for(i = 0; i < derived_counter->ninstances; ++i)
-    {
-        pmsprintf(cpuname, sizeof(cpuname), "cpu%d", derived_counter->counter_list->counter->data[i].id);
-        pindom->it_set[i].i_inst = i;
-        pindom->it_set[i].i_name = strdup(cpuname);
-    }
-}
-
 /* \brief set number of open files allowed to maximum possible.
  *
  * Note this PMDA may open one file per-event per-CPU so attempt
@@ -628,7 +649,7 @@ static int setup_metrics()
                                       + (nderivedcounters * METRICSPERDERIVED))
                                      * sizeof(*dynamic_metric_infotab) );
     metrictab              = malloc( nummetrics * sizeof(*metrictab) );
-    indomtab               = malloc( numindoms * sizeof(*indomtab) );
+    indomtab               = calloc( numindoms, sizeof(*indomtab) );
 
     if( (NULL == dynamic_metric_infotab) || (NULL == metrictab) || (NULL == indomtab) )
     {
@@ -656,7 +677,10 @@ static int setup_metrics()
          * counter */
         indom = i + NUM_STATIC_INDOMS + NUM_STATIC_DERIVED_INDOMS;
 
-        config_indom( &indomtab[indom], indom, &hwcounters[i]);
+        indomtab[indom].it_indom = indom;
+        if (refresh_indom(&indomtab[indom], hwcounters[i].data,
+                          hwcounters[i].ninstances) < 0)
+            return -1;
 
         /* Copy metric template settings. */
         memcpy(pmetric, default_metric_settings, sizeof(default_metric_settings));
@@ -686,7 +710,11 @@ static int setup_metrics()
         cluster = i + nhwcounters + NUM_STATIC_CLUSTERS + NUM_STATIC_DERIVED_CLUSTERS;
         indom = i + nhwcounters + NUM_STATIC_INDOMS + NUM_STATIC_DERIVED_INDOMS;
 
-        config_indom_derived( &indomtab[indom], indom, &derived_counters[i]);
+        indomtab[indom].it_indom = indom;
+        if (refresh_indom(&indomtab[indom], derived_counters[i].ninstances ?
+                          derived_counters[i].counter_list->counter->data : NULL,
+                          derived_counters[i].ninstances) < 0)
+            return -1;
 
         memcpy(pmetric, derived_metric_settings, sizeof(derived_metric_settings));
         for(index = 0; index < METRICSPERDERIVED; index++)
